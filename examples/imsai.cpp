@@ -3,6 +3,9 @@
 #include "TMS5501.h"
 #include "8251Uart.h"
 #include <vector>
+#include <signal.h>
+#include <termios.h>
+#include <unistd.h>
 
 using z80::fast_u8;
 using z80::fast_u16;
@@ -11,10 +14,12 @@ using z80::least_u8;
 
 #define SWITCH_LED 0xFFU
 I8251Uart THE_UART(0x2);
-TMS5501 TMSCHA(0x10);
+TMS5501 TMSCHA(0x10, true);
 TMS5501 TMSCHB(0x20);
 
 //#define DEBUG
+
+#define TOTAL_MEM   40 * 1024
 
 #ifdef DEBUG
 #define DEBUG_MEM_ACC
@@ -42,6 +47,11 @@ public:
     base::on_set_pc(pc);
   }
 
+  void on_tick(unsigned t) {
+    base ::on_tick(t);
+    cycle += t;
+  }
+
   fast_u8 on_read(fast_u16 addr) override;
 
   void on_write(fast_u16 addr, fast_u8 n) override;
@@ -58,10 +68,10 @@ public:
 
   void on_call(z80::fast_u16 pc) {
 
-    if (pc == 0x120) {
-      std::printf("Call to memset... at %04lx\n", get_pc());
-      dump_stack_top();
-    }
+//    if (pc == 0x120) {
+//      std::printf("Call to memset... at %04lx\n", get_pc());
+//      dump_stack_top();
+//    }
 
     shadow_call_stack.push_back(get_pc());
     base::on_call(pc);
@@ -122,9 +132,9 @@ void IMSAIEmulator::on_write(fast_u16 addr, fast_u8 n) {
   std::printf("write 0x%02x at 0x%04x\n", static_cast<unsigned>(n),
                 static_cast<unsigned>(addr));
 #endif
-  if (addr > 0x9000) {
+  if (addr >= TOTAL_MEM) {
     std::printf("Large mem write at 0x%04lx at PC=0x%04lx, SP=0x%04lx\n", addr, get_pc(), get_sp());
-    exit(1);
+    return;
   }
   if (addr < code_end) {
     dump_reg_info();
@@ -146,6 +156,8 @@ void IMSAIEmulator::on_write(fast_u16 addr, fast_u8 n) {
 
 fast_u8 IMSAIEmulator::on_read(fast_u16 addr) {
   assert(addr < z80::address_space_size);
+  if (addr >= TOTAL_MEM)
+    return 0xFF;
   fast_u8 n = memory[addr];
 #ifdef DEBUG_MEM_ACC
   std::printf("read 0x%02x at 0x%04x\n", static_cast<unsigned>(n),
@@ -266,7 +278,50 @@ void IMSAIEmulator::on_set_iregp(fast_u16 nn) {
   unreachable("Unknown index register.");
 }
 
+struct termios orig_termios;
+void disableRawMode() {
+  tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+}
+
+void enableRawMode() {
+  tcgetattr(STDIN_FILENO, &orig_termios);
+  struct termios raw = orig_termios;
+
+  raw.c_iflag &= static_cast<unsigned int>(~(ICRNL));
+  raw.c_lflag &= static_cast<unsigned int>(~(ECHO | ICANON));
+  raw.c_cc[VMIN] = 0;
+  raw.c_cc[VTIME] = 0;
+
+  tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+}
+
+extern "C" void cleanup(int) {
+  exit(0);
+}
+
+extern "C" void beforeExit(void) {
+  puts("Dying...\n");
+  disableRawMode();
+}
+
 int main(int argc, char **argv) {
+  atexit(beforeExit);
+  signal(SIGINT, reinterpret_cast<__sighandler_t>(cleanup));
+
+  enableRawMode();
+
+//  char c;
+//  ssize_t readval = 0;
+//  while (readval = read(STDIN_FILENO, &c, 1), c != 'q') {
+//    if (!readval)
+//      continue;
+//    if (iscntrl(c)) {
+//      printf("%d\n", c);
+//    } else {
+//      printf("%d ('%c')\n", c, c);
+//    }
+//  }
+
 
   if (argc < 2) {
     fprintf(stderr, "No file provided. \n%s [file]", argv[0]);
@@ -287,7 +342,7 @@ int main(int argc, char **argv) {
 
   FILE *pc_file = fopen("pc_list.txt", "w");
 
-  for (e.cycle = 0;; ++e.cycle) {
+  for (e.cycle = 0;;) {
     e.on_step();
 
     if (e.get_pc() > read) {

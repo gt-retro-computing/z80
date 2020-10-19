@@ -3,6 +3,7 @@
 //
 
 #include <stdint.h>
+#include <cstdio>
 #include "IODevice.h"
 
 #ifndef Z80_TMS5501_H
@@ -11,8 +12,10 @@
 class TMS5501 : public IODevice {
 private:
   uint8_t PortBase;
+  bool IsConsole;
+  int NextChar = EOF;
 public:
-  explicit TMS5501(uint8_t Base) : PortBase(Base) {}
+  explicit TMS5501(uint8_t Base, bool isConsole = false) : PortBase(Base), IsConsole(isConsole) {}
 
   uint8_t doIn(uint8_t port) override;
 
